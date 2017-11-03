@@ -1,0 +1,55 @@
+ /**
+  *
+  * \file main.c
+  */
+
+/* Includes ------------------------------------------------------------------*/
+
+#include "stm32f4xx_hal.h"
+#include "macro_types.h"
+#include "main.h"
+#include "demo.h"
+#include "demo_with_lcd.h"
+#include "config.h"
+
+
+
+
+#if !DEMO_WITH_LCD
+	/**
+	  * @brief  Main program.
+	  * @func int main(void)
+	  * @param  None
+	  * @retval None
+	  */
+	int main(void)
+	{
+		DEMO_init();
+		while (1)
+		{
+			DEMO_process_main();
+		}
+	}
+#else
+	/**
+	  * @brief  Main program.
+	  * @func int main(void)
+	  * @param  None
+	  * @retval None
+	  */
+	int main(void)
+	{
+		DEMO_with_lcd_init();
+		while (1)
+		{
+			DEMO_with_lcd_process_main();
+		}
+	}
+#endif
+
+
+
+
+
+
+

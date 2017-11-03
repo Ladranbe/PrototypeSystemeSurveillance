@@ -1,0 +1,4 @@
+eclipse.preferences.version=1
+externalMigrateFromAuthorizationDatabase/isMigrated=true
+migrateFromAuthorizationDatabase/isMigrated=true
+repositories/3003acb2309700151805c4ed3987dc91=3003acb2309700151805c4ed3987dc91;http\://tice.sea.eseo.fr/upro/svn/STM32/trunk/SOFT/projet-exemple/;http\://tice.sea.eseo.fr/upro/svn/STM32/trunk/SOFT/projet-exemple/;branches;tags;trunk;true;835cba71-867d-4542-8edd-8282f295b22b;http\://tice.sea.eseo.fr/upro/svn/STM32;;false;;;0

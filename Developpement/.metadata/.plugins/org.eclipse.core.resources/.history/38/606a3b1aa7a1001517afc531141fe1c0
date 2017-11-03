@@ -1,0 +1,526 @@
+/**
+ * demo.c
+ *
+ *  Created on: 24 fevr. 2015
+ *      Author: Samuel Poiraud
+ *
+ *      @brief Cette application fournit une demo d'utilisation d'un ensemble de librairies.
+ *
+ *      Toute application de votre creation peut se construire sur la base de ce modele.
+ */
+#include "config.h"
+#include "stm32f4xx_hal.h"
+#include "main.h"
+#include "demo_touchscreen.h"
+#include "stm32f4_gpio.h"
+#include "stm32f4_timer.h"
+#include "stm32f4_uart.h"
+#include "stm32f4_sys.h"
+#include "demo_camera.h"
+#include "ff.h"
+#include "diskio.h"
+#include "lcd_display_form_and_text.h"
+#include "demo_accelerometer.h"
+#include "demo_sd.h"
+#include "demo_usb_host.h"
+#include "demo_usb_device.h"
+#include "demo_PWM.h"
+#include "demo_dac.h"
+#include "demo_adc.h"
+#include "demo_webserver.h"
+#include "demo_rng.h"
+#include "demo_matrix_keyboard.h"
+#include "demo_lcd2x16.h"
+#include "stm32f4_rtc.h"
+#include "demo.h"
+#include <string.h>
+
+
+#if DEMO_WITH_LCD
+
+typedef struct
+{
+	uint16_t pos_x;
+	uint16_t pos_y;
+	uint16_t size_x;
+	uint16_t size_y;
+	uint16_t color;
+	uint16_t back_color;
+	char * text;
+}menu_button_t;
+
+#define MARGIN_HIGH	10
+#define LINE_HEIGHT	24
+#define LINE_SIZE_Y	18
+#define MARGIN_LEFT	10
+#define VERTICAL_STEP	105
+
+//Enumeration des identifiants des menus affiches sur l'ecran
+//ATTENTION, il y a correspondance entre les elements de l'enum menu_choice_e et les boutons menu_buttons
+typedef enum
+{
+	CHOICE_NONE = 0,
+	CHOICE_TS_CALIBRATE,
+	CHOICE_LCD2X16,
+	CHOICE_SD_CARD,
+	CHOICE_USB_KEY,
+	CHOICE_CAMERA_TO_LCD,
+	CHOICE_CAMERA_TO_SRAM,
+	CHOICE_WEB_SERVER,
+	CHOICE_ACCELEROMETER,
+	CHOICE_PWM,
+	CHOICE_ADC,
+	CHOICE_DAC,
+	CHOICE_MOUSE,
+	CHOICE_RNG,
+	CHOICE_RTC,
+	CHOICE_MATRIX_KEYBOARD,
+	CHOICE_NB
+}menu_choice_e;
+
+const menu_button_t menu_buttons[CHOICE_NB] =
+{
+	{0,								0,								0,		0,				0, 				0, 						""					},		//CHOICE_NONE,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*1,		0,		LINE_SIZE_Y, 	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"Calibration"		},		//CHOICE_TS_CALIBRATE,
+	{MARGIN_LEFT+VERTICAL_STEP*2-12,	MARGIN_HIGH+LINE_HEIGHT*1,		0,		LINE_SIZE_Y, 	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,	"LCD2x16"			},		//CHOICE_LCD2X16,
+	{MARGIN_LEFT+VERTICAL_STEP*2,	MARGIN_HIGH+LINE_HEIGHT*2,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"SD "				},		//CHOICE_SD_CARD,
+	{MARGIN_LEFT+VERTICAL_STEP*2,	MARGIN_HIGH+LINE_HEIGHT*3,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"USB"				},		//CHOICE_USB_KEY,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*6,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"Camera>LCD "		},		//CHOICE_CAMERA_TO_LCD,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*5,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"Camera>SRAM"		},		//CHOICE_CAMERA_TO_SRAM,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*7,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"Web Server "		},		//CHOICE_WEB_SERVER,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*4,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"Accelerometer"		},		//CHOICE_ACCELEROMETER,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*2,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"PWM"				},		//CHOICE_PWM,
+	{MARGIN_LEFT+VERTICAL_STEP,		MARGIN_HIGH+LINE_HEIGHT*2,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"ADC"				},		//CHOICE_ADC,
+	{MARGIN_LEFT+VERTICAL_STEP,		MARGIN_HIGH+LINE_HEIGHT*3,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"DAC"				},		//CHOICE_DAC,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*3,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"Mouse"				},		//CHOICE_MOUSE,
+	{MARGIN_LEFT,					MARGIN_HIGH+LINE_HEIGHT*8,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"RNG"				},		//CHOICE_RNG,
+	{MARGIN_LEFT+VERTICAL_STEP*2,	MARGIN_HIGH+LINE_HEIGHT*4,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"RTC"				},		//CHOICE_RTC,
+	{MARGIN_LEFT+VERTICAL_STEP-24,	MARGIN_HIGH+LINE_HEIGHT*8,		0,		LINE_SIZE_Y,	LCD_COLOR_BLUE, LCD_COLOR_YELLOW,		"MatrixKeyboard"	}		//CHOICE_MATRIX_KEYBOARD,
+};
+
+menu_choice_e DEMO_IHM_menu_choice_lcd(void);
+void DEMO_IHM_display_menu(void);
+static void DEMO_state_machine(bool_e button_pressed, char touch_pressed);
+menu_choice_e DEMO_IHM_menu_choice_uart(void);
+running_e DEMO_IHM_read_number(uint32_t * nb);
+#define BUFFER_SIZE	10
+static char buffer[BUFFER_SIZE];
+static uint8_t buffer_index = 0;
+char DEMO_IHM_uart_read(void);
+volatile static uint8_t t = 0;
+int capteur_IT;
+
+
+
+//Definition de deux lecteurs physiques pour FATFS
+PARTITION VolToPart[2] = {(PARTITION){PD_SD, 0}, (PARTITION){1, 1}};
+
+//////////////Fonctions publiques
+
+/**
+ * @brief Cette fonction d'initialisation doit etre appelee une fois, prealablement a tout appel a une autre fonction de ce module logiciel.
+ * 			Elle configure les broches d'entree-sortie, lance un timer (1ms) et initialise l'USART2.
+ * @post	Un message de bienvenue est envoye sur la sortie de l'USART2
+ */
+void DEMO_with_lcd_init(void)
+{
+	HAL_Init();
+	SYS_init();			//initialisation du systeme (horloge...)
+	GPIO_Configure();	//Configuration des broches d'entree-sortie.
+	TIMER2_run_1ms();	//Lancement du timer 2 a une periode d'1ms.
+	Camera_reset();
+
+	UART_init(2,UART_RECEIVE_ON_MAIN);	//Initialisation de l'USART2 (PA2=Tx, PA3=Rx, 115200 bauds/sec)
+	//UART_init(6,UART_RECEIVE_ON_MAIN);	//Initialisation de l'USART6 (PC6=Tx, PC7=Rx, 115200 bauds/sec)
+	//SYS_set_std_usart(USART6,USART6,USART6);
+}
+
+void display_Camera_On_LCD(void){
+	if(capteur_IT==1){
+		display("Verge", LCD_COLOR_RED);
+		if(Camera_statemachine(FALSE, MODE_CAMERA_TO_LCD)!= IN_PROGRESS)
+		{
+			/*UART_init(6,UART_RECEIVE_ON_MAIN);
+			SYS_set_std_usart(USART6, USART6,USART6);
+			UART_DeInit(2);*/
+			/*LCD_SetFont(&Font12x12);
+			LCD_DisplayStringLine(LINE(1), COLUMN(4), (uint8_t *)"Camera", LCD_COLOR_WHITE, LCD_COLOR_BLACK,LCD_NO_DISPLAY_ON_UART);
+			LCD_SetFont(&Font8x12);
+			LCD_DisplayStringLine(LINE(19), COLUMN(2), (uint8_t *)"Appuyez pour reinitialiser", LCD_COLOR_WHITE, LCD_COLOR_BLACK,LCD_NO_DISPLAY_ON_UART);
+			LCD_SetFont(&Font16x24);*/
+		}
+		/*LCD_SetFont(&Font12x12);
+		LCD_DisplayStringLine(LINE(1), COLUMN(4), (uint8_t *)"Camera", LCD_COLOR_WHITE, LCD_COLOR_BLACK,LCD_NO_DISPLAY_ON_UART);
+		LCD_SetFont(&Font8x12);
+		LCD_DisplayStringLine(LINE(19), COLUMN(2), (uint8_t *)"Appuyez pour réinitialiser", LCD_COLOR_WHITE, LCD_COLOR_BLACK,LCD_NO_DISPLAY_ON_UART);
+		LCD_SetFont(&Font16x24);*/
+	}
+}
+
+
+
+
+/**
+ * @brief cette fonction doit etre appelee periodiquement en tâche de fond. Elle assure la lecture du bouton bleu et appelle la machine a etats de l'application de demo.
+ */
+void DEMO_with_lcd_process_main(void)
+{
+	static bool_e bt_previous;
+	bool_e bt_current;
+	bool_e button_pressed;
+	char touch_pressed;
+
+	//Detection d'appui bouton.
+	bt_current = (bool_e)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);//Lecture bouton.
+	button_pressed = (!bt_previous && bt_current);			//Detection d'un appui bouton
+	bt_previous = bt_current;								//Memorisation pour le prochain passage.
+	
+	touch_pressed = DEMO_IHM_uart_read();	//Bufferise chaque caractère reçu et le renvoi.
+	//Detection de l'appui sur
+	DEMO_state_machine(button_pressed || touch_pressed == 'm' || touch_pressed == 'M', touch_pressed);
+}
+
+/**
+ * @brief	Fonction appelee automatiquemeent en interruption suite au debordement du timer 2, toutes les 1 ms.
+ * @post	cette fonction est utilisee pour appeler periodiquement les routines d'interruption des modules logiciels qui en ont besoin.
+ */
+void TIMER2_user_handler_it_1ms(void)
+{
+	static uint8_t t_10ms = 0; //static demande a la fonction de garder la valeur de t_10ms meme si on en sort
+
+	/* La notation qui suit est egale a: t_10ms prend 0 si (t_10ms==9) sinon t_10ms prend t_10ms+1 */
+	t_10ms = (t_10ms == 9)?0:t_10ms+1;		//Increment de la variable t_10ms avec passage de 9 a 0.
+	if(!t_10ms)// vrai pour t_10ms=0 => vrai toutes les 10ms
+		Camera_process_10ms();		//Ce module logiciel souhaite etre appele toutes les 10ms...
+	if(t)
+		t--;
+
+	//Ces modules logiciels souhaitent etre appeles toutes les ms. (pour incrementer des compteurs, ou lever des flags)
+	//ATTENTION, chacune de ces fonction appelees ici doit s'engager a ne pas durer "trop longtemps" (duree d'execution tres inferieur a 1ms !!!)
+	TS_process_1ms();
+	DEMO_accelerometer_process_1ms();
+	DEMO_pwm_process_1ms();
+	DEMO_usb_device_process_1ms();
+	DEMO_dac_process_1ms();
+	DEMO_adc_process_1ms();
+	DEMO_webserver_process_1ms();
+	DEMO_rng_process_1ms();
+	DEMO_matrix_keyboard_process_1ms();
+	DEMO_lcd2x16_process_1ms();
+}
+
+
+
+////////////////Fonctions privees
+#define DEFAULT_APPLI	DISPLAY_MENU		//Si on veut voir le menu
+//#define DEFAULT_APPLI	USB_DEVICE		//Si on veut qu'une appli se lance directement
+
+
+/**
+ * @brief	Cette fonction privee est une machine a etat qui regit le comportement de l'application demo.
+ * 			Elle affiche un menu a l'ecran et reagit en fonction des appuis sur l'ecran tactile ou sur le bouton.
+ * 			Le menu fonctionne sous la forme suivante :
+ * 					Lorsqu'on choisit un bouton sur l'ecran LCD tactile, cette machine a etat bascule dans l'etat correspondant.
+ * 					Dans cet etat, on appelle une "sous-machine a etat", qui va "vivre sa vie"... et renvoyer un argument du type running_e
+ * 					Si cette sous-machine a etat continue de tourner, elle renvoit IN_PROGRESS.
+ * 					Si cette sous-machine a etat a termine, elle renvoit autre chose, et on revient a l'affichage du menu.
+ * 			Ainsi, on peut considerer que la fonction DEMO_state_machine entretient le lancement d'une application que l'on choisit... ou demande son arret.
+ */
+static void DEMO_state_machine(bool_e button_pressed, char touch_pressed)
+{
+	__unused typedef enum
+	{
+		INIT = 0,
+		//...
+		//Aucun état ne peut être placé ici...
+		//Les valeurs de l'enum menu_choice_e sont des états possibles ! (sauf CHOICE_NONE et CHOICE_NB)
+		//...
+		//...
+		DISPLAY_MENU = CHOICE_NB,
+		WAIT_MENU_CHOICE,
+		SHOW_TOUCH_PRESSED,
+		IDLE
+	}state_e;
+	static uint8_t state = INIT;	//Volontairement non déclarés comme state_e...
+
+
+	switch(state)
+	{
+		case INIT:
+			STM32f4_Discovery_LCD_Init();		//on initialise l'ecran LCD
+			LCD_Clear(LCD_COLOR_BLUE);			//on colorie entierement l'ecran en bleu
+
+			TS_Init();							//on initialise l'ecran tactile
+
+			state = DEFAULT_APPLI;
+			break;
+		case DISPLAY_MENU:
+			DEMO_IHM_display_menu();			//On affiche le menu sur l'ecran
+			state = WAIT_MENU_CHOICE;
+			break;
+		case WAIT_MENU_CHOICE:{
+			menu_choice_e choice;
+			choice = DEMO_IHM_menu_choice_uart();			//La liaison série peut communiquer un choix de menu
+			if(capteur_IT==1){
+				choice=CHOICE_CAMERA_TO_LCD;
+			}
+			if(choice == CHOICE_NONE)
+			{
+				if(!t)
+				{
+					t = 50;
+					choice = DEMO_IHM_menu_choice_lcd();	//L'écran tactile peut communiquer un choix de menu
+				}
+			}
+
+			if(button_pressed)
+				state = DISPLAY_MENU;
+
+			if(choice == CHOICE_CAMERA_TO_LCD || choice == CHOICE_CAMERA_TO_SRAM)
+			{
+				//debug_printf("Abandon de l'UART6 car ports en conflit avec la camera -> utilisation de l'UART2 (si vous lisez ceci, vous etes branche a l'UART6)\n");
+				//debug_printf("Rappel : le bouton bleu permet de revenir au menu\n");
+				//UART_init(2,UART_RECEIVE_ON_MAIN);
+				SYS_set_std_usart(USART2, USART2,USART2);
+				UART_DeInit(6);
+				//debug_printf("Abandon de l'UART6 car ports en conflit avec la camera -> utilisation de l'UART2 (si vous lisez ceci, vous etes branche a l'UART2)\n");
+				printf("Presence intrus\n");	//Message diffusé sur PC par communication sur l'UART2
+			}
+
+
+			if(choice != CHOICE_NONE)
+			{
+				state = choice;
+				LCD_Clear(LCD_COLOR_BLACK);
+				//printf("Launching %s...\n",menu_buttons[choice].text);
+				//printf("Press M or blue button to ask the end of application and to return to the Menu.\n");
+			}
+			break;}// On sort du menu choice
+		case CHOICE_TS_CALIBRATE:
+			if(TS_Calibration(button_pressed, CALIBRATION_MODE_CALIBRATE_AND_SHOW_VALUE_AND_PROVIDE_TELECRAN_GAME) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_CAMERA_TO_LCD:	//no break;
+		case CHOICE_CAMERA_TO_SRAM:
+			/* a la fin du module camera, on retourne sur l'uart6 */
+			if(Camera_statemachine(button_pressed, (state==CHOICE_CAMERA_TO_SRAM)?MODE_CAMERA_TO_SRAM:MODE_CAMERA_TO_LCD) != IN_PROGRESS)
+			{
+				//debug_printf("Abandon de l'UART2 -> retour a l'utilisation de l'UART6 (si vous lisez ceci, vous etes branche a l'UART2)\n");
+				Camera_reset();
+				//BSP_ACCELERO_WakeUp();
+				UART_init(6,UART_RECEIVE_ON_MAIN);
+				SYS_set_std_usart(USART6, USART6,USART6);
+				UART_DeInit(2);
+				//debug_printf("Abandon de l'UART2 -> retour a l'utilisation de l'UART6 (si vous lisez ceci, vous etes branche a l'UART6)\n");
+				state = DISPLAY_MENU;
+			}
+			break;
+		case CHOICE_SD_CARD:
+			if(DEMO_sd_state_machine(button_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_USB_KEY:
+			if(DEMO_USB_state_machine(button_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_WEB_SERVER:
+			if(DEMO_webserver(button_pressed, TRUE) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_ACCELEROMETER:
+			if(DEMO_accelerometer_state_machine(button_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_PWM:
+			if(DEMO_pwm_statemachine(button_pressed, touch_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_MOUSE:
+			if(DEMO_usb_device_statemachine(button_pressed,touch_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_DAC:
+			if(DEMO_dac_statemachine(button_pressed, touch_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_ADC:
+			if(DEMO_adc_statemachine(button_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case IDLE:
+			if(button_pressed)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_RNG:
+			if(DEMO_rng_statemachine(button_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_RTC:
+			if(DEMO_RTC_process_main(button_pressed) != IN_PROGRESS)
+				state = DISPLAY_MENU;
+			break;
+		case CHOICE_MATRIX_KEYBOARD:
+			if(DEMO_matrix_keyboard_process_main(button_pressed) != IN_PROGRESS)
+				state = INIT;
+			break;
+		case CHOICE_LCD2X16:
+			if(DEMO_lcd2x16_process_main(button_pressed) != IN_PROGRESS)
+				state = INIT;	//Réinitialisation du LCD.
+			break;
+		default:
+			state = INIT;	//Never happen.
+			break;
+	}
+}
+
+
+
+/**
+ * @brief Cette fonction affiche sur l'ecran LCD l'ensemble des elements du menu, en utilisant le tableau menu_buttons.
+ */
+void DEMO_IHM_display_menu(void)
+{
+	menu_choice_e i;
+	LCD_Clear(LCD_COLOR_BLACK);
+
+	//printf("________Menu_________\n");
+	LCD_SetFont(&Font12x12);
+	LCD_DisplayStringLine(LINE(1), COLUMN(4), (uint8_t *)"Demonstration - Menu", LCD_COLOR_WHITE, LCD_COLOR_BLACK,LCD_NO_DISPLAY_ON_UART);
+	LCD_SetFont(&Font8x12);
+	LCD_DisplayStringLine(LINE(19), COLUMN(2), (uint8_t *)"Retour au menu : bouton-bleu", LCD_COLOR_WHITE, LCD_COLOR_BLACK,LCD_NO_DISPLAY_ON_UART);
+	LCD_SetFont(&Font16x24);
+	for(i=CHOICE_NONE+1;i<CHOICE_NB;i++)	//Pour chaque element i du menu... on affiche...
+	{
+		LCD_DisplayStringLine(menu_buttons[i].pos_y, menu_buttons[i].pos_x, (uint8_t*)menu_buttons[i].text, menu_buttons[i].color, menu_buttons[i].back_color,LCD_NO_DISPLAY_ON_UART);
+		//printf("%02d : %s\n", i, menu_buttons[i].text);
+	}
+}
+
+
+/**
+ * @brief cette fonction consulte l'ecran tactile. Si un appui est fait par l'utilisateur elle analyse sa position et renvoit l'identifiant de la case pressee.
+ * @pre		cette fonction utilise le tableau menu_buttons qui contient la position de chaque bouton sur l'ecran
+ * @pre		cette fonction necessite que l'ecran tactile soit correctement initialise
+ * @post	attention, cette fonction prend en compte la detection d'appui, et ne renverra qu'une seule fois le menu presse lorsque l'utilisateur maintient son doigt sur un menu.
+ * @return	cette fonction retourne un element de l'enumeration menu_choice_e (CHOICE_NONE si aucun menu n'est presse)
+ */
+menu_choice_e DEMO_IHM_menu_choice_lcd(void)
+{
+	menu_choice_e i;
+	uint16_t x = 0, y = 0;
+	bool_e press = FALSE;
+	static menu_choice_e choice = CHOICE_NONE;
+	static menu_choice_e time_release = 0;
+	menu_choice_e new_choice;
+	menu_choice_e ret = CHOICE_NONE;
+	
+	press = TS_Get_Touch(&x, &y);
+
+	if(press)
+	{
+		new_choice = CHOICE_NONE;
+		
+		/*On teste pour chaque bouton i ses coordonnees correspondent aux coordonnees rentrees par l'utilisateur*/
+		for(i=CHOICE_NONE+1;i!=CHOICE_NB;i++)
+		{
+			if(x>menu_buttons[i].pos_x && x < menu_buttons[i].pos_x+strlen(menu_buttons[i].text)*LCD_GetFont()->Width)
+			{
+				if(y>menu_buttons[i].pos_y && y < menu_buttons[i].pos_y + LCD_GetFont()->Height)
+				{
+					new_choice = i;
+					break;
+				}
+			}
+		}
+
+		if(new_choice != choice)
+		{
+			/*Si le bouton est relache, on le surligne de sa couleur de fond*/
+			if(choice != CHOICE_NONE)
+				LCD_DisplayStringLine(menu_buttons[choice].pos_y, menu_buttons[choice].pos_x, (uint8_t*)menu_buttons[choice].text, menu_buttons[choice].color, menu_buttons[choice].back_color,LCD_NO_DISPLAY_ON_UART);
+			/*Si c'est la premiere fois qu'on appuie sur le bouton, on le surligne en bleu*/
+			if(new_choice != CHOICE_NONE)
+				LCD_DisplayStringLine(menu_buttons[new_choice].pos_y, menu_buttons[new_choice].pos_x, (uint8_t*)menu_buttons[new_choice].text, menu_buttons[new_choice].color, LCD_COLOR_GREEN,LCD_NO_DISPLAY_ON_UART);
+			choice = new_choice;
+		}
+
+		time_release = 0;
+	}
+	else
+	{
+		if(choice != CHOICE_NONE)
+			time_release++;
+		if(time_release >= 4)
+		{
+			ret = choice;
+			choice = CHOICE_NONE;
+		}
+	}
+	
+	return ret;
+}
+
+
+
+/**
+ * @brief cette fonction consulte l'ecran tactile. Si un appui est fait par l'utilisateur elle analyse sa position et renvoit l'identifiant de la case pressee.
+ * @pre		cette fonction utilise le tableau menu_buttons qui contient la position de chaque bouton sur l'ecran
+ * @pre		cette fonction necessite que l'ecran tactile soit correctement initialise
+ * @post	attention, cette fonction prend en compte la detection d'appui, et ne renverra qu'une seule fois le menu presse lorsque l'utilisateur maintient son doigt sur un menu.
+ * @return	cette fonction retourne un element de l'enumeration menu_choice_e (CHOICE_NONE si aucun menu n'est presse)
+ */
+menu_choice_e DEMO_IHM_menu_choice_uart(void)
+{
+	menu_choice_e ret;
+	uint32_t nb;
+	ret = CHOICE_NONE;
+	if(DEMO_IHM_read_number(&nb) == END_OK)
+	{
+		if(nb < CHOICE_NB)
+			ret = (menu_choice_e)nb;	//On caste nb en menu_choice_e.
+	}
+	return ret;
+}
+
+char DEMO_IHM_uart_read(void)
+{
+	char c;
+	c = UART_getc(6);
+	if(c)	//Pour chaque caractï¿½re reï¿½u
+	{
+		buffer[buffer_index] = c;	//On range le caractï¿½re dans le buffer
+		if(buffer_index < BUFFER_SIZE)	//Si on est pas dï¿½jï¿½ ï¿½ la fin
+			buffer_index++;				//On incrï¿½mente l'index
+	}
+	return  c;
+}
+
+
+running_e DEMO_IHM_read_number(uint32_t * nb)
+{
+	running_e ret;
+	uint8_t i, end_loop;
+	ret = IN_PROGRESS;
+	end_loop = buffer_index;
+	for(i=0;i<end_loop;i++)
+	{
+		switch(buffer[i])
+		{
+			case 0:
+				break;	//Impossible ?!
+			case '\n':
+			case '\r':
+				buffer[i] = 0;		//On termine la commande par un zï¿½ro terminal.
+				buffer_index = 0;	//L'index revient ï¿½ 0.
+				*nb = strtol(buffer, NULL, 0);
+				ret = END_OK;
+				break;
+			default:
+				break;
+		}
+	}
+
+	return ret;
+}
+
+#endif

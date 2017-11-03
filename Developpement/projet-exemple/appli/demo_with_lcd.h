@@ -1,0 +1,21 @@
+/**
+ * demo.h
+ *
+ *  Created on: 2 mars 2015
+ *      Author: Nirgal
+ */
+
+#ifndef DEMO_WITH_LCD_H_
+#define DEMO_WITH_LCD_H_
+
+#include "stm32f4xx_hal.h"
+#include "macro_types.h"
+
+
+void DEMO_with_lcd_init(void);
+
+void DEMO_with_lcd_process_main(void);
+
+void display_Camera_On_LCD(void);
+
+#endif /* DEMO_WITH_LCD_H_ */

@@ -1,0 +1,523 @@
+ /**
+  *
+  * \file main.c
+  * \mainpage
+   * \brief Gestion de la caméra vers la RAM.
+   *
+   * \author Samuel POIRAUD
+   * \date 9 décembre 2014
+   */
+
+/*
+ * Il y a deux manières d'afficher l'image prise par la caméra sur l'écran LCD :
+ * 	1- utilisation du DMA (direct memory access) : la caméra envoit directement son image au LCD
+ * 		Cette méthode présente l'avantage de ne pas utiliser le processeur (plus rapide), ni la mémoire (meilleure définition possible)
+ * 		L'inconvénient de cette méthode : l'image n'étant pas physiquement présente dans le microcontroleur, il n'est pas possible de la traiter facilement.
+ * 		Il reste possible de récupérer l'image dans la RAM du LCD, en stoppant (temporairement) le flux de la caméra.
+ * 	2- en deux temps : récupération de l'image dans la RAM du microcontroleur, puis envoit sur le LCD
+ * 		Cette méthode présente la possibilité de traiter l'image en RAM (modification, traitement algorithmique particulier, enregistrement);
+ * 		La présence du LCD n'est pas obligatoire (si on veut simplement enregistrer ou détecter des choses sans afficher les images)
+ *	Ce fichier permet la méthode n°2.
+ */
+/* Includes ------------------------------------------------------------------*/
+
+
+#include "macro_types.h"
+#include "stm32f4_lcd.h"
+#include "lcd_display_form_and_text.h"
+#include "DEMO_accelerometer.h"
+#include "stm32f4_discovery.h"
+#include "stm32f4xx_hal.h"
+#include "dcmi_ov9655.h"
+#include "demo_camera.h"
+#include "stm32f4_gpio.h"
+#include "stm32f4_sys.h"
+
+
+
+/* Private typedef -----------------------------------------------------------*/
+/* Private define ------------------------------------------------------------*/
+#define DCMI_DR_ADDRESS     0x50050028
+#define FSMC_LCD_ADDRESS    0x60100000
+#define SIZE_DMA_TAB 		(160*120*2)
+
+/* Private macro -------------------------------------------------------------*/
+/* Private variables ---------------------------------------------------------*/
+
+volatile uint8_t dma_buffer[SIZE_DMA_TAB]; // tableau correspondant à la RAM
+volatile bool_e img_ready = FALSE;
+volatile static uint32_t t;
+
+DCMI_HandleTypeDef DCMI_HandleStructure;
+DMA_HandleTypeDef  DMA_HandleStructure;
+I2C_HandleTypeDef I2C_HandleStructure;
+
+
+/* Private function prototypes -----------------------------------------------*/
+uint8_t DCMI_OV9655Config(CAMERA_mode_e mode);
+void DCMI_Config(CAMERA_mode_e mode);
+void I2C1_Config(void);
+void DMA2_Stream1_IRQHandler(void);
+
+
+/**
+  * @brief  initialize (private function)
+  * @func int CameraToSRAM_init(void)
+  * @param  None
+  * @retval None
+  */
+static void Camera_init(void)
+{
+	Delay(10);
+	DCMI_Control_IO_Init();
+	Delay(10);
+}
+
+/**
+  * @brief  Reset de la camera
+  *	@func void Camera_reset(void)
+  */
+void Camera_reset(void)
+{
+	DCMI_OV9655_hardware_reset();
+}
+
+/**
+  * @brief  Machine a etat qui copie l'image en RAM et l'envoie sur le LCD...
+  * @func void statemachine (void)
+  * @param  None
+  * @retval
+  */
+
+running_e Camera_statemachine (bool_e ask_for_finish, CAMERA_mode_e mode)
+{
+	typedef enum
+	{
+		INIT = 0,
+		FAIL_TO_INIT_CAMERA,
+		WAIT_DETECTION,
+		CAMERA_ENABLE,
+		WAIT_FULL_TAB,
+		CAMERA_DISABLE,
+		DATA_SENDING,
+		IDLE,
+		CLOSE
+	}state_e;
+	static bool_e asked_for_finish = FALSE;
+	static state_e state = INIT;
+	running_e ret = IN_PROGRESS;
+	char text[30];
+
+	if(ask_for_finish)
+		asked_for_finish = TRUE;
+	switch(state)
+	{
+		case INIT:
+
+			asked_for_finish = FALSE;
+			LCD_Clear(LCD_COLOR_WHITE);
+			LCD_SetFont(&Font8x12);
+			sprintf(text,"Initialize camera...");
+
+			LCD_DisplayStringLine(LINE(1),COLUMN(0),(uint8_t *)text,LCD_COLOR_BLACK,LCD_COLOR_WHITE,LCD_DISPLAY_ON_UART);
+
+			DEMO_accelerometer_close();	//On initialise l'accéléromètre pour configurer ses sorties en opendrain... pour qu'elles n'entrent pas en conflit avec la caméra !
+			Camera_init();
+			if (DCMI_OV9655Config(mode) == 0x00)
+				state = CAMERA_ENABLE;
+			else
+				state = FAIL_TO_INIT_CAMERA;
+			STM32f4_Discovery_LCD_Init();
+			if(mode == MODE_CAMERA_TO_LCD)
+			{
+				LCD_SetDisplayWindow(0, 0, 320, 240);
+			}
+			LCD_WriteRAM_Prepare();
+			break;
+		case FAIL_TO_INIT_CAMERA:
+			sprintf(text,"Fail to initialize camera");
+			LCD_DisplayStringLine(LINE(3),COLUMN(0),(uint8_t *)text,LCD_COLOR_RED,LCD_COLOR_WHITE,LCD_DISPLAY_ON_UART);
+			state = IDLE;
+			break;
+		case WAIT_DETECTION:
+			if(asked_for_finish)
+				state = CLOSE;
+			else
+				state = CAMERA_ENABLE;
+			break;
+
+		case CAMERA_ENABLE:
+			if(mode == MODE_CAMERA_TO_SRAM)
+				NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+
+			__HAL_DCMI_ENABLE(&DCMI_HandleStructure);
+			__HAL_DMA_ENABLE(&DMA_HandleStructure);
+
+			if(mode==MODE_CAMERA_TO_SRAM)
+			{
+				if(HAL_DCMI_Start_DMA(&DCMI_HandleStructure, DCMI_MODE_CONTINUOUS, (uint32_t)dma_buffer, SIZE_DMA_TAB/4) != HAL_OK)
+				{
+					// Erreur à gérer
+				}
+			}
+			else
+			{
+				if(HAL_DCMI_Start_DMA(&DCMI_HandleStructure, DCMI_MODE_CONTINUOUS, FSMC_LCD_ADDRESS, 1) != HAL_OK)
+				{
+					// Erreur à gérer
+				}
+			}
+
+			if(mode == MODE_CAMERA_TO_SRAM)
+				state = WAIT_FULL_TAB;
+			else
+				state = IDLE;
+
+			break;
+
+		case WAIT_FULL_TAB:
+			if(asked_for_finish)
+			{
+				state = CLOSE;
+			}
+			else if(img_ready)
+			{
+				img_ready = FALSE;
+				state = CAMERA_DISABLE;
+			}
+			break;
+
+		case CAMERA_DISABLE:
+			HAL_DCMI_Stop(&DCMI_HandleStructure);
+			state = DATA_SENDING;
+			break;
+
+		case DATA_SENDING:
+			LCD_WriteReg(0x03, 0x1008);
+			LCD_SetCursor(0,0);
+			LCD_WriteRAM_Prepare();
+			uint16_t x, y;
+			uint16_t index;
+			for(y=0; y<240; y++)
+			{
+				for(x=0;x<320;x++)
+				{
+					index = (y/2)*160 + (x/2);
+					LCD_WriteRAM(U16FROMU8(dma_buffer[2*index+1],dma_buffer[2*index]));
+				}
+			}
+			LCD_WriteReg(0x03, 0x1018);
+			Delay(10);
+			state = WAIT_DETECTION;
+			break;
+		case IDLE:
+			if(asked_for_finish)
+				state = CLOSE;
+			break;
+		case CLOSE:
+			HAL_DCMI_Stop(&DCMI_HandleStructure);
+			LCD_Clear(LCD_COLOR_CYAN);
+			ret = END_OK;
+			state = INIT;
+			break;
+		default:
+			state = INIT;
+			break;
+
+	}
+	return ret;
+}
+
+
+
+/**
+  * @brief  Configures all needed resources (I2C, DCMI and DMA) to interface with
+  *         the OV9655 camera module
+  *	@func uint8_t DCMI_OV9655Config(void)
+  * @param  None
+  * @retval 0x00 Camera module configured correctly
+  *         0xFF Camera module configuration failed
+  */
+uint8_t DCMI_OV9655Config(CAMERA_mode_e mode)
+{
+	/* I2C1 will be used for OV9655 camera configuration */
+	I2C1_Config();
+
+	/* Reset and check the presence of the OV9655 camera module */
+	if (DCMI_SingleRandomWrite(OV9655_DEVICE_WRITE_ADDRESS,0x12, 0x80))
+	{
+    	return (0xFF);
+	}
+
+	/* OV9655 Camera size setup */
+	if(mode == MODE_CAMERA_TO_LCD)
+		DCMI_OV9655_QVGASizeSetup();	//240*320
+	else
+		DCMI_OV9655_QQVGASizeSetup();	//120*160
+	/* Set the RGB565 mode */
+	DCMI_SingleRandomWrite(OV9655_DEVICE_WRITE_ADDRESS, OV9655_COM7, 0x63);
+	DCMI_SingleRandomWrite(OV9655_DEVICE_WRITE_ADDRESS, OV9655_COM15, 0x10);
+
+	/* Invert the HRef signal*/
+	DCMI_SingleRandomWrite(OV9655_DEVICE_WRITE_ADDRESS, OV9655_COM10, 0x08);
+
+	/* Configure the DCMI to interface with the OV9655 camera module */
+	DCMI_Config(mode);
+
+	return (0x00);
+}
+
+/**
+  * @brief  Configures the I2C1 used for OV9655 camera module configuration.
+  * @func void I2C1_Config(void)
+  * @param  None
+  * @retval None
+  */
+void I2C1_Config(void)
+{
+	
+	I2C_HandleStructure.Instance = I2C1;
+	/* I2C1 clock enable */
+	__HAL_RCC_I2C1_CLK_ENABLE();
+	/* GPIOB clock enable */
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	
+	/* Connect I2C1 pins to AF4 ************************************************/
+	/* Configure I2C1 GPIOs *****************************************************/
+	BSP_GPIO_PinCfg(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_MODE_AF_OD, GPIO_NOPULL, GPIO_SPEED_LOW, GPIO_AF4_I2C1);
+
+
+	/* Configure I2C1 ***********************************************************/
+	/* I2C DeInit */
+	if(HAL_I2C_DeInit(&I2C_HandleStructure) != HAL_OK)
+	{
+		// Erreur à gérer
+	}
+	/* Enable the I2C peripheral */
+	__HAL_I2C_ENABLE(&I2C_HandleStructure);
+
+	/* Set the I2C structure parameters */
+	I2C_HandleStructure.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+	I2C_HandleStructure.Init.DutyCycle = I2C_DUTYCYCLE_2;
+	I2C_HandleStructure.Init.OwnAddress1 = 0xFE;
+	I2C_HandleStructure.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+	I2C_HandleStructure.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	I2C_HandleStructure.Init.ClockSpeed = 30000;
+	I2C_HandleStructure.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+	I2C_HandleStructure.Init.OwnAddress2 = 0xFE; ///----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  
+	/* Initialize the I2C peripheral w/ selected parameters */
+	if(HAL_I2C_Init(&I2C_HandleStructure) != HAL_OK)
+	{
+		// Erreur à gérer
+	}
+}
+
+
+/**
+  * @brief  Configures the DCMI to interface with the OV9655 camera module.
+  * @func void DCMI_Config(void)
+  * @param  None
+  * @retval None
+  */
+void DCMI_Config(CAMERA_mode_e mode)
+{
+	/* Enable DCMI GPIOs clocks */
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	__HAL_RCC_GPIOE_CLK_ENABLE();
+
+	/* Enable DCMI clock */
+	__HAL_RCC_DCMI_CLK_ENABLE();
+
+  
+
+	/* DCMI GPIO configuration **************************************************/
+	/* D0 D1(PC6/7) */
+	BSP_GPIO_PinCfg(GPIOC, GPIO_PIN_6 | GPIO_PIN_7, GPIO_MODE_AF_PP, GPIO_PULLUP, GPIO_SPEED_HIGH, GPIO_AF13_DCMI);
+
+	
+	/* D2..D4(PE0/1/4) D6/D7(PE5/6) */
+	BSP_GPIO_PinCfg(GPIOE, GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6, GPIO_MODE_AF_PP, GPIO_PULLUP, GPIO_SPEED_HIGH, GPIO_AF13_DCMI);
+
+	
+	/* D5(PB6), VSYNC(PB7) */
+	BSP_GPIO_PinCfg(GPIOB, GPIO_PIN_6 | GPIO_PIN_7, GPIO_MODE_AF_PP, GPIO_PULLUP, GPIO_SPEED_HIGH, GPIO_AF13_DCMI);
+
+	
+	/* PCLK(PA6) HSYNC(PA4)*/
+	BSP_GPIO_PinCfg(GPIOA, GPIO_PIN_4 | GPIO_PIN_6, GPIO_MODE_AF_PP, GPIO_PULLUP, GPIO_SPEED_HIGH, GPIO_AF13_DCMI);
+
+	
+
+  /* DCMI configuration *******************************************************/
+	DCMI_HandleStructure.Instance = DCMI;
+
+	HAL_DCMI_DeInit(&DCMI_HandleStructure);
+
+	DCMI_HandleStructure.Init.SynchroMode = DCMI_SYNCHRO_HARDWARE;
+	DCMI_HandleStructure.Init.PCKPolarity = DCMI_PCKPOLARITY_FALLING;
+	DCMI_HandleStructure.Init.VSPolarity = DCMI_VSPOLARITY_HIGH;
+	DCMI_HandleStructure.Init.HSPolarity = DCMI_HSPOLARITY_HIGH;
+	DCMI_HandleStructure.Init.CaptureRate = DCMI_CR_ALL_FRAME;
+	DCMI_HandleStructure.Init.ExtendedDataMode = DCMI_EXTEND_DATA_8B;
+	DCMI_HandleStructure.Init.JPEGMode = DCMI_JPEG_DISABLE;
+	
+	if(HAL_DCMI_Init(&DCMI_HandleStructure) != HAL_OK)
+	{
+		// Erreur à gérer
+	}
+
+	/* Configures the DMA2 to transfer Data from DCMI to the LCD ****************/
+	/* Enable DMA2 clock */
+	__HAL_RCC_DMA2_CLK_ENABLE();
+	
+	DMA_HandleStructure.Instance = DMA2_Stream1;
+	
+	/* DMA2 Stream1 Configuration */
+	if(HAL_DMA_DeInit(&DMA_HandleStructure) != HAL_OK)
+	{
+		// Erreur à gérer
+	}
+	
+	if(mode==MODE_CAMERA_TO_SRAM)
+	{
+		DMA_HandleStructure.Init.Channel = DMA_CHANNEL_1;
+		DMA_HandleStructure.Init.Direction = DMA_PERIPH_TO_MEMORY;
+		DMA_HandleStructure.Init.PeriphInc = DMA_PINC_DISABLE;
+		DMA_HandleStructure.Init.MemInc = DMA_MINC_ENABLE;
+		DMA_HandleStructure.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
+		DMA_HandleStructure.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+		DMA_HandleStructure.Init.Mode = DMA_CIRCULAR;
+		DMA_HandleStructure.Init.Priority = DMA_PRIORITY_HIGH;
+		DMA_HandleStructure.Init.FIFOMode = DMA_FIFOMODE_ENABLE;
+		DMA_HandleStructure.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+		DMA_HandleStructure.Init.MemBurst = DMA_MBURST_SINGLE;
+		DMA_HandleStructure.Init.PeriphBurst = DMA_PBURST_SINGLE;
+	}
+	else	//MODE_CAMERA_TO_LCD
+	{
+		DMA_HandleStructure.Init.Channel = DMA_CHANNEL_1;
+		DMA_HandleStructure.Init.Direction = DMA_PERIPH_TO_MEMORY;
+		DMA_HandleStructure.Init.PeriphInc = DMA_PINC_DISABLE;
+		DMA_HandleStructure.Init.MemInc = DMA_MINC_DISABLE;
+		DMA_HandleStructure.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
+		DMA_HandleStructure.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+		DMA_HandleStructure.Init.Mode = DMA_CIRCULAR;
+		DMA_HandleStructure.Init.Priority = DMA_PRIORITY_HIGH;
+		DMA_HandleStructure.Init.FIFOMode = DMA_FIFOMODE_ENABLE;
+		DMA_HandleStructure.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
+		DMA_HandleStructure.Init.MemBurst = DMA_MBURST_SINGLE;
+		DMA_HandleStructure.Init.PeriphBurst = DMA_PBURST_SINGLE;
+	}
+	if(HAL_DMA_Init(&DMA_HandleStructure) != HAL_OK)
+	{
+		// Erreur à gérer
+	}
+	__HAL_LINKDMA(&DCMI_HandleStructure, DMA_Handle, DMA_HandleStructure);
+
+
+
+
+  if(mode == MODE_CAMERA_TO_SRAM)
+  {
+	/* configuration de l'interruption */
+	/* activation de l'interruption du DMA */
+	HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 1, 1);
+  }
+
+}
+
+
+
+/**
+
+  * @brief  Decrements the TimingDelay variable.
+  * @func void TimingDelay_Decrement(void)
+  * @param  None
+  * @retval None
+  */
+void Camera_process_10ms(void)
+{
+  if (t)
+    t--;
+}
+
+
+/**
+  * @brief  routine d'interruption du DMA levant une IT quand le buffer est à moitié rempli, et une IT quand le buffer est totalement rempli
+  * @func void DMA2_Stream1_IRQHandler(void)
+  * @param  None
+  * @retval None
+  */
+void DMA2_Stream1_IRQHandler(void)
+{
+	HAL_DMA_IRQHandler(&DMA_HandleStructure);
+}
+
+/**
+  * @brief  Desactive le dcmi et les interruptions sur DMA2_Stream1_IRQn. Met img_ready a TRUE.
+  * @func 	void HAL_DCMI_FrameEventCallback(DCMI_HandleTypeDef *hdcmi)
+  * @param  *hdcmi: Adresse du gestionnaire dcmi pour pouvoir le desactiver
+  * @retval none
+  */
+void HAL_DCMI_FrameEventCallback(DCMI_HandleTypeDef *hdcmi)
+{
+	img_ready = TRUE;
+	HAL_DCMI_Stop(&DCMI_HandleStructure);
+	HAL_NVIC_DisableIRQ(DMA2_Stream1_IRQn);
+}
+
+/**
+  * @brief  Writes a byte at a specific Camera register
+  * @param  Device: OV9655 write address.
+  * @param  Addr: OV9655 register address.
+  * @param  Data: data to be written to the specific register
+  * @retval 0x00 if write operation is OK.
+  *         0xFF if timeout condition occured (device not connected or bus error).
+  */
+uint8_t DCMI_SingleRandomWrite(uint8_t Device, uint16_t Addr, uint8_t Data)
+{
+
+	if(HAL_I2C_Mem_Write(&I2C_HandleStructure, (uint16_t)Device, Addr, I2C_MEMADD_SIZE_8BIT, &Data, 1, DCMI_TIMEOUT_MAX) != HAL_OK)
+	{
+		HAL_DCMI_ErrorCallback(&DCMI_HandleStructure);
+		// Erreur à gérer
+	}
+
+	// If operation is OK, return 0 */
+	return 0;
+}
+
+/**
+  * @brief  Reads a byte from a specific Camera register
+  * @param  Device: OV9655 write address.
+  * @param  Addr: OV9655 register address.
+  * @retval data read from the specific register or 0xFF if timeout condition
+  *         occured.
+  */
+uint8_t DCMI_SingleRandomRead(uint8_t Device, uint16_t Addr)
+{
+	uint8_t Data = 0;
+	if(HAL_I2C_Mem_Read(&I2C_HandleStructure, (uint16_t)Device, Addr, I2C_MEMADD_SIZE_8BIT, &Data, 1, DCMI_TIMEOUT_MAX) != HAL_OK)
+	{
+		HAL_DCMI_ErrorCallback(&DCMI_HandleStructure);
+		// Erreur à gérer
+	}
+
+	// return the read data */
+	return Data;
+}
+
+/**
+ * @brief Permet de gerer une erreur dans le dcmi
+ * @param *hdcmi: permet de recuperer l'erreur
+ * @retval none
+ */
+void HAL_DCMI_ErrorCallback(DCMI_HandleTypeDef *hdcmi)
+{
+	// A écrire selon les besoins...
+}
+
+

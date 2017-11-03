@@ -1,0 +1,39 @@
+17:27:30 **** Incremental Build of configuration Debug for project projet-exemple ****
+make -j8 all 
+'Building file: ../appli/main.c'
+'Invoking: MCU GCC Compiler'
+C:\Users\benoi_000\Documents\Mini_Projet_Microprocesseurs_I2\Developpement\projet-exemple\Debug
+arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=soft -DSTM32F407VGTx -DSTM32F4 -DSTM32F4DISCOVERY -DSTM32 -DDEBUG -I../appli -I../lib/hal/inc -I../lib/bsp -I../lib/bsp/Common -I../lib/bsp/lcd2x16 -I../lib/bsp/MatrixKeyboard -I../lib/bsp/lis302dl -I../lib/bsp/lis3dsh -I../lib/bsp/audio -I../lib/bsp/ov9655 -I../lib/bsp/stmpe811 -I../lib/bsp/LCD -I../lib/middleware/ -I../lib/middleware/FatFs/src -I../lib/middleware/FatFs/src/drivers -I../lib/middleware/webserver -I../lib/middleware/webserver/lwip -I../lib/middleware/webserver/lwip/src/include -I../lib/middleware/webserver/lwip/system -I../lib/middleware/webserver/lwip/src/include/ipv4 -I../lib/middleware/webserver/lwip/src/include/lwip -I../lib/middleware/webserver/lwip/port -I../lib/middleware/webserver/STD_lib -I../lib/middleware/usb_device/Class/HID/Inc -I../lib/middleware/usb_device/Class/MSC/Inc -I../lib/middleware/usb_device/Core/Inc -I../lib/middleware/usb_host/Class/MSC/Inc -I../lib/middleware/usb_host/Core/Inc -I../lib/middleware/PDM -O0 -g3 -Wall -fmessage-length=0 -ffunction-sections -c -MMD -MP -MF"appli/main.d" -MT"appli/main.d" -o "appli/main.o" "../appli/main.c"
+../appli/main.c:137:9: warning: "/*" within comment [-Wcomment]
+         /*t_ms=0;
+ ^
+../appli/main.c:141:7: warning: "/*" within comment [-Wcomment]
+       /*else //Front descendant : si on relâche le bouton
+ ^
+../appli/main.c: In function 'EXTI1_IRQHandler':
+../appli/main.c:196:5: warning: implicit declaration of function 'SYS_set_std_usart' [-Wimplicit-function-declaration]
+     SYS_set_std_usart(USART2,USART2,USART2);
+     ^
+../appli/main.c:188:7: warning: unused variable 'i' [-Wunused-variable]
+   int i;
+       ^
+../appli/main.c: At top level:
+../appli/main.c:68:16: warning: 'etat' defined but not used [-Wunused-variable]
+  static etat_e etat=INIT;
+                ^
+'Finished building: ../appli/main.c'
+' '
+'Building target: projet-exemple.elf'
+'Invoking: MCU GCC Linker'
+arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=soft -T"../lib/LinkerScript.ld" -Wl,-Map=output.map -Wl,--gc-sections -lm -o "projet-exemple.elf" @"objects.list"  
+'Finished building target: projet-exemple.elf'
+' '
+make --no-print-directory post-build
+'Generating binary and Printing size information:'
+arm-none-eabi-objcopy -O binary "projet-exemple.elf" "projet-exemple.bin" && arm-none-eabi-size "projet-exemple.elf"
+   text	   data	    bss	    dec	    hex	filename
+  95384	   2440	  74388	 172212	  2a0b4	projet-exemple.elf
+' '
+
+17:27:52 Build Finished (took 21s.433ms)
+
